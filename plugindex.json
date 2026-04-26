@@ -1,0 +1,7 @@
+{
+  "@type": "cadaide:plugin",
+  "id": "app.cadaide.playground",
+  "name": "(DEV) Cadaide plugin playground",
+  "package": "https://github.com/Cadaide/plug-playground/archive/refs/heads/main.zip",
+  "entrypoint": "src/module.ts"
+}
