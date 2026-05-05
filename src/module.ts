@@ -6,48 +6,34 @@ import {
   type IPackageManager,
 } from "@cadaide/plugin";
 
-cadaide.on("initialize", async () => {
-  cadaide.notifications.info("Hello!");
-
-  /*const res = await cadaide.http.get("https://api.npms.io/v2/search?q=axios");
-
-  cadaide.notifications.warning(
-    JSON.parse(res).results[0].package.name as any as string,
-  );*/
-});
-
-class MyPackageManagerProvider implements IPackageManager {
+class PlaygroundPM implements IPackageManager {
   async listInstalled(): Promise<IInstalledPackageInfo[]> {
-    return [
-      {
-        id: "axios",
-        name: "Axios",
-        installedVersion: "v0.1.1",
-        shortDescription:
-          "HTTP request library with really loooooooooooong description",
-      },
-    ];
+    const pkgs = await getNpmInstalledPackages();
+
+    return pkgs;
   }
 
   async search(query: string): Promise<IPackageInfo[]> {
     const endpoint =
-      "https://api.npms.io/v2/search?q=" + encodeURIComponent(query);
-    const result = await cadaide.http.get(endpoint);
+      "https://registry.npmjs.org/-/v1/search?text=" +
+      encodeURIComponent(query);
 
-    return JSON.parse(result as string).results.map((pkg: any) => ({
+    const result = await cadaide.http.get<any>(endpoint);
+
+    const res = result.objects.map((pkg: any) => ({
       id: pkg.package.name,
       name: pkg.package.name,
       versions: [], // Not needed for search
       shortDescription: pkg.package.description,
     }));
+
+    return res;
   }
 
   async detail(id: string): Promise<IDetailedPackageInfo> {
-    const endpoint = "https://registry.npmjs.org/" + encodeURIComponent(id);
-    const result = await cadaide.http.get(endpoint);
-    const parsed: any = JSON.parse(result as string);
+    const pkgInfo = await getNpmPackageInfo(id);
 
-    const latestVersion = parsed.versions[parsed["dist-tags"].latest];
+    const latestVersion = pkgInfo.versions[pkgInfo["dist-tags"].latest];
     const repo = latestVersion.repository.url;
     const ghRepoId = repo
       .split("://")[1]
@@ -57,30 +43,69 @@ class MyPackageManagerProvider implements IPackageManager {
       .split(".")[0];
 
     const readmeApiUrl = "https://api.github.com/repos/" + ghRepoId + "/readme";
-    const readmeResult = await cadaide.http.get(readmeApiUrl);
-    const parsedReadmeResult: any = JSON.parse(readmeResult as string);
+    const readmeResult = await cadaide.http.get<any>(readmeApiUrl);
 
-    const readmeUrl = parsedReadmeResult.download_url;
+    const readmeUrl = readmeResult.download_url;
     const readme = await cadaide.http.get(readmeUrl);
 
+    const allInstalled = await getNpmInstalledPackages(true);
+    const installed = allInstalled.find((pkg) => pkg.id == id);
+
     return {
-      id: parsed.name,
-      name: parsed.name,
-      isInstalled: false,
-      installedVersion: null,
-      versions: Object.keys(parsed.time).toReversed(),
-      shortDescription: parsed.description,
+      id: pkgInfo.name,
+      name: pkgInfo.name,
+      isInstalled: !!installed,
+      installedVersion: !!installed ? installed.installedVersion : null,
+      versions: Object.keys(pkgInfo.time).toReversed(),
+      shortDescription: pkgInfo.description,
       description: readme as string,
     };
   }
 
   async install(id: string, version: string): Promise<void> {
-    cadaide.notifications.info(`Installed ${id}@${version}`);
+    await cadaide.shell.run(["bun", "install", `${id}@${version}`], {
+      cwd: await cadaide.workspace.getProjectPath(),
+    });
   }
 
   async uninstall(id: string): Promise<void> {
-    cadaide.notifications.info(`Uninstalled ${id}`);
+    await cadaide.shell.run(["bun", "uninstall", `${id}`], {
+      cwd: await cadaide.workspace.getProjectPath(),
+    });
   }
 }
 
-cadaide.packageManager.provide(MyPackageManagerProvider);
+cadaide.events.on("frontend.initialized", () => {
+  cadaide.notifications.info("Plugin initialized");
+
+  cadaide.packageManager.provide(PlaygroundPM);
+});
+
+async function getNpmPackageInfo(id: string) {
+  const endpoint = "https://registry.npmjs.org/" + encodeURIComponent(id);
+  const result = await cadaide.http.get(endpoint);
+
+  return result as any;
+}
+
+async function getNpmInstalledPackages(omitDescriptions: boolean = false) {
+  const res = (await cadaide.shell.run(["cat", "package.json"], {
+    cwd: await cadaide.workspace.getProjectPath(),
+  })) as {
+    stdout: string;
+  };
+
+  return Promise.all(
+    Object.entries(JSON.parse(res.stdout).dependencies ?? {}).map(
+      async ([id, version]: [string, unknown]) =>
+        ({
+          id: id,
+          name: id,
+          shortDescription: !omitDescriptions
+            ? (await getNpmPackageInfo(id)).description
+            : "",
+          installedVersion: version,
+        }) as IInstalledPackageInfo,
+    ),
+  );
+}
